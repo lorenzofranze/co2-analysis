@@ -62,6 +62,6 @@ Here sections are listed:
 
 ## Conclusions
 
-We were able to answer all the statistical questions using different methods, in particular the most interesting result was the precence of a threshold after which CO2 emissions no longer correlates with GDP.
+We were able to answer all the statistical questions using different methods, in particular the most interesting result was the precence of a threshold after which CO2 emissions no longer correlate with GDP.
 
 
