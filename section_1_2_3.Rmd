@@ -1,0 +1,1164 @@
+---
+title: "co2 emissions analysis"
+output: co2 emissions analysis
+author: "Bortolotti Simone, Franzè Lorenzo, Stancioi Ioana-Ruxandra"
+---
+
+# CO2 dataset anaysis
+
+## Description of the problem
+
+Human emissions of carbon dioxide and other greenhouse gases – are a primary driver of climate change – and present one of the world’s most pressing challenges.
+
+<https://ourworldindata.org/co2-and-other-greenhouse-gas-emissions>
+
+Some data possibly related to C02 emissions, have been extracted from
+
+<https://ourworldindata.org>.
+
+Data have been selected for various nations and various years.
+
+1\. Country: name of the country. 2. y: year. 3. EnergyUse: Energy use (kg of oil equivalent per capita). 4. GDP: Gross Domestic Product per capita, PPP (constant 2017 international \$). 5. pop: Population (historical estimates). 6. co2: Annual CO2 emissions (per capita) 7. lowcarbon: Low-carbon energy (% sub energy). Low-carbon energy is defined as the sum of nuclear and renewable sources. Renewable sources include hydropower, solar, wind, geothermal, wave and tidal and bioenergy. Traditional biofuels are not included. 8. urb: urban population (%) . 9. internet: number of internet users (OWID based on WB & UN).
+
+**Task:** Consider a regression model to explain C02 emission with the other variables. You can transform some of the variables. Additional questions: C02 and GDP are strongly dependent? Historically, CO2 emissions have been strongly correlated with how much money we have. This is particularly true at low-to-middle incomes. The richer we are, the more CO2 we emit. This is because we use more energy – which often comes from burning fossil fuels. This relationship is stil true at higher incomes? In addition you can: consider and compare various years. Consider the time as a covariate. Add more covariates (taking them from the web). Consider time series models.
+
+```{r}
+rm(list=ls())
+#import libraries
+library("ggplot2")
+library("BAS")
+library(fitdistrplus)
+library(goftest)
+library(mixtools)
+library(rjags)
+library(coda)
+library(caret)
+
+```
+
+```{r}
+#read from path
+CO2 <- read.csv("C:/Users/loren/Downloads/CO2.csv")
+head(CO2)
+
+#remove first column
+CO2=CO2[,-1]
+
+#rename some variables for better understanding
+colnames(CO2) <- c("country", "year", "energyUse", "GDP", "pop", "co2", "lowcarbon", "internet", "urb")
+head(CO2)
+
+```
+
+## Preliminary analysis
+
+Per Capita Analysis: Advantages:
+
+Making it easier to compare countries with different population sizes.
+
+Individual Impact: Helps to understand the average impact or behavior of an individual within a country, and can help finding particular relationships in a country for example and n. of internet users or urbanization in the country.
+
+Fair Comparison: Allows fair comparison between countries regardless of their population sizes.
+
+-   Lowcarbon is defined as % of energy (per capita) so we transform it into real numbers by multiplying for the EnergyUse column and divide by 100
+-   Internet is the number of users using internet in the country so we divide it by the population size in order to consider the internet usage per capita
+-   Urban population is a percentage but we can keep it as is since it accounts for the percentage of the population living in urban areas. However it is on a 0-100 scale so we divide it by 100 to have it on a 0-1 scale.
+
+summary(data)
+
+```{r}
+#doing the transformations
+data <- CO2
+data$lowcarbon<-(CO2$lowcarbon/100)*CO2$energyUse
+data$internet<-CO2$internet / CO2$pop
+data$urb<-CO2$urb/100
+
+#and remove the variable county since we don't need it since all the information are already contained in the other covariates
+data <- data[,-1]
+
+#lastly we remove the year variable since we are not interested in the time series analysis for now
+#and remove population since we consider the results per capita and this information is already contained in the other covariates
+data<-data[,c(-1, -4)]
+
+head(data)
+summary(data[,1:4])
+summary(data[,5:ncol(data)]) 
+```
+
+Data have a completely different scale so some transformation may be useful, first see if centering the data is useful. Now let's display the correlation matrix to see if there are some variables that are highly correlated.
+
+```{r}
+# Correlation matrix:
+par(mfrow=c(1, 1),pty="s")
+image(1:ncol(data),1:ncol(data),cor(data),
+      xlab="",ylab="",main="Correlation between predictors",
+      axes=FALSE)
+axis(1,1:ncol(data),colnames(data),las=2,cex.axis=0.9)
+axis(2,1:ncol(data),colnames(data),las=2,cex.axis=0.9)
+cor(data)
+
+```
+
+Our target distribution co2 as expected has some correlation with energyUse and a middle correlation with GDP: they can be useful to predict the co2 emissions.
+
+Interestingly, internet is positively correlated with GDP. This may tamper slightly the linear regression model since we have a multicollinearity exactly with GDP, and this will make difficult to determine the individual effect of each independent variable on the dependent variable.
+
+Lowcarbon as expected is correlated especially with energyUse, however since lowcarbon is not particularly correlated with others in particular with co2 we remove it and subtract it from energyUse since it represents the amount of energy that being renewable doesn't produce co2 emissions.
+
+```{r}
+data$energyUse <- data$energyUse - data$lowcarbon
+data <- data[,-4]
+summary(data[,1:3])
+summary(data[,4:ncol(data)]) 
+
+```
+
+Data are not centered: we use the scale function. Now let's visualize the data to see better the data distribution and if there are some outliers.
+
+```{r}
+data <- as.data.frame(scale(data))
+
+par(mfrow=c(1, 1),pty="m")
+
+boxplot(data,las=3,main="Standardized covariates",cex.axis=0.75)
+
+```
+
+Since we notice a certain number of observations located far from the medians, we rather conclude that some variables display a skewness in their distribution, others are more normally distributed. We will consider this aspect in the regression analysis.
+
+Lastly let's visualize if there are **groups** into some variables
+
+```{r}
+#for each element of the data we plot the histogram
+par(mfrow=c(2, 3),pty="m")
+for(i in 1:ncol(data)){
+  hist(data[,i], freq = FALSE, main=colnames(data)[i],xlab="",cex.axis=0.75)
+  lines(density(data[,i]), col="red", lwd=2)
+}
+
+```
+
+No particular groups are visible in the histograms.
+
+Now let's display the correlation matrix to see how correlations changed.
+
+```{r}
+# Correlation matrix:
+par(mfrow=c(1, 1),pty="s")
+image(1:ncol(data),1:ncol(data),cor(data),
+      xlab="",ylab="",main="Correlation between predictors",
+      axes=FALSE)
+axis(1,1:ncol(data),colnames(data),las=2,cex.axis=0.9)
+axis(2,1:ncol(data),colnames(data),las=2,cex.axis=0.9)
+cor(data)
+
+```
+
+Results are pretty good since a strong relationship between co2 and energyUse is visible.
+
+The other variables are not highly correlated among them, so we can proceed with the regression analysis.
+
+Just to have an idea let's plot the charts of co2 vs GDP and co2 vs energyUse.
+
+```{r}
+#par(mfrow=c(1, 2),pty="m")
+
+plot(data$GDP,data$co2,xlab="GDP",ylab="CO2emission", asp = 1)
+plot(data$energyUse,data$co2,xlab="EnergyUse",ylab="CO2emission", asp = 1)
+```
+
+There are some outliers but we don't care if we use some models robust to outliers.
+
+Just for visualization let's see what happen if we remove the outliers that have a co2 emissions above the threshold displayed in the boxlots
+
+```{r}
+#remove the outliers that have a co2 emissions above the threshold displayed in the boplots
+iqr = quantile(data$co2,0.75) - quantile(data$co2,0.25)
+threshold = quantile(data$co2,0.75) + 1.5*iqr
+co2_no_out <- data[data$co2 < threshold, ]$co2
+gdp_no_out <- data[data$co2 < threshold, ]$GDP
+plot(gdp_no_out,co2_no_out,xlab="GDP",ylab="CO2emission", main= "CO2 vs GDP without outliers", asp=1)
+
+```
+
+They don't have a big impact on the data distribution so we can keep them.
+
+## Linear regression models with BAS
+
+Here we consider some Bayesian linear regression models, we use: **Zellner’s g-priors** and **Jeffreys-Zellner-Siow (JZS) priors**
+
+We will consider doing model selection or use some regularization techniques if the model will overfit on the test set. However it may heppen that the model will not overfit and instead it will underfit. In this case we will consider adding more covariates or use a different model (more complexity).
+
+In order to test the model we will split the data into training and test set. We will use the training set to fit the model and the test set to evaluate the model.
+
+```{r}
+#split the data into training and test set
+set.seed(123)
+train_index <- sample(1:nrow(data), 0.8*nrow(data))
+train_data <- data[train_index,]
+test_data <- data[-train_index,]
+n = nrow(train_data)
+
+#to compare the errors let's write a function to print the results
+
+compareErrors <- function(model){
+  #training error
+  pred_train <- predict(model, newdata = train_data, estimator = "HPM")$fit
+  train_error <- mean((train_data$co2 - pred_train)^2)
+  print(paste("Train Mean sum of squared error is:", train_error))
+  
+  #test error
+  pred_test <- predict(model, newdata = test_data, estimator = "HPM")$fit
+  test_error <- mean((test_data$co2 - pred_test)^2)
+  print(paste("Test Mean sum of squared error is:", test_error))
+}
+
+```
+
+### prediction using only energyUse
+
+We start by considering only the energyUse variable to predict the co2 emissions, uninformative prior is used.
+
+```{r}
+emissions.blm = bas.lm(co2 ~ energyUse, data=train_data, prior="g-prior", alpha=n,
+                       modelprior=Bernoulli(1))
+coefficients(emissions.blm)
+
+newdata <- data.frame(energyUse = seq(min(train_data$energyUse), max(train_data$energyUse), length.out = 100))
+ynewdata <- predict(emissions.blm, newdata = newdata, estimator = "HPM")$fit
+
+output <- data.frame(x = newdata, y_hat = ynewdata)
+
+plot1 <- ggplot(data = data, aes(x = energyUse, y = co2)) + 
+  geom_point(color = "steelblue") + xlab("energyUse") +
+  geom_line(data = output, aes(x = energyUse, y=y_hat),lty=1) +
+  ggtitle("Predicted CO2 Emissions vs. Energy Use")
+
+plot1
+
+compareErrors(emissions.blm)
+
+```
+
+The prediction seems quite good and the model doesn't overfit on the test set. let's see if we can improve the model by adding more covariates.
+
+### prediction using all the covariates
+
+We set modelprior=Bernoulli(1) to include all the covariates in the model with probability 1. Since we don't have a prior we set alpha = n (uninformative prior)
+
+```{r}
+emissions.blm = bas.lm(co2 ~ . , data=train_data, prior="g-prior", alpha=n,
+                       modelprior=Bernoulli(1))
+coeff = coefficients(emissions.blm)
+
+confint(coeff)[,1:3]
+
+coeff
+compareErrors(emissions.blm)
+
+par(mfrow = c(2, 2))
+plot(coeff, subset = c(2,3,4,5), ask=FALSE)
+
+```
+
+The prediction has improved and the model doesn't overfit on the test set, so we have decreased both the bias and the variance of the model. Some coefficients are close to 0 like urb so we could consider remove them from the model
+
+Let's try with a different prior: Jeffreys-Zellner-Siow (JZS) prior and this time let's see if simplifying the model we can improve the prediction, or better have a simpler model without more bias.
+
+### Jeffreys-Zellner-Siow (JZS) priors
+
+```{r}
+emissions.blm = bas.lm(co2 ~ . , data=train_data, prior="JZS", alpha=1,
+                       modelprior = uniform())
+
+round(summary(emissions.blm), 3)
+coeff = coefficients(emissions.blm, estimator = "HPM")
+
+coeff 
+```
+
+-   BF is the Bayes factor, where the benchmark model (at the numerator) is the one with highest posterior probability;
+-   PostProbs indicates the posterior probability of selecting the model;
+-   dim returns the number of variables (including the intercept) in the model;
+-   logmarg is the logarithm of the marginal likelihood, approximately equal to −0.5BIC
+
+In the part above besides the covariates wee see their importance in the model: energyUse and GDP are the most important covariates, since their posterior probability is the highest and close to 1.
+
+As expected the model that excludes urb and internet has the highest posterior probability, so we can consider removing them from the model.
+
+```{r}
+#select best model
+best = which.max(emissions.blm$logmarg)
+# Print the selected subset of variables:
+selectedVars = emissions.blm$which[[best]]+1
+
+emissions.blm$namesx[selectedVars]
+
+compareErrors(emissions.blm)
+par(mfrow = c(1, 2))
+plot(coeff, subset = c(2,3), ask=FALSE )
+```
+
+***note**:* the compareErrors function is already defined in order to choose the HPM, we decided not to use a BMA since we are interested in the best model and not in the average of the models, in order to have a more interpretable and simple model.
+
+We consider it as a good result since the model is composed only of 2 covariates and reach the same performance as the previous model with all the covariates.
+
+### Adding more covariates
+
+Even further we explore the possibility to add more covariates to the model, in order to consider for example non-linear relationships: we add the squared of energyUse.
+
+```{r}
+#add to train test the covariate squared of energyUse and squared of GDP
+train_data$energyUse2 <- train_data$energyUse^2
+test_data$energyUse2 <- test_data$energy
+train_data$GDP2 <- train_data$GDP^2
+test_data$GDP2 <- test_data$GDP
+
+```
+
+```{r}
+emissions.blm = bas.lm(co2 ~ . , data=train_data, prior="JZS", alpha=1,
+                       modelprior = uniform())
+
+round(summary(emissions.blm), 3)
+coeff = coefficients(emissions.blm, estimator = "HPM")
+
+coeff 
+
+#select best model
+best = which.max(emissions.blm$logmarg)
+# Print the selected subset of variables:
+selectedVars = emissions.blm$which[[best]]+1
+
+emissions.blm$namesx[selectedVars]
+
+compareErrors(emissions.blm)
+par(mfrow = c(1, 3))
+plot(coeff, subset = c(2,3, 6), ask=FALSE )
+
+```
+
+### Conclusion of regression with BAS
+
+-   If we avoid adding more covariates, the model with the JZS prior has the best performance and among the selected the one with only energyUse and GDP as covariates is the best. It has a lower BIC compared to the other subset of models. The model doesn't overfit on the test set and has a good performance. Lastly it shows a strong relashionship between co2 and GDP since the posterior probability is close to 1.
+
+-   If instead we add more covariates we can see that the model with the squared of energyUse and energy has a lower BIC compared to the other subset of models and get better overall performances. In this case the importance of GDP with co2 decays.
+
+## Analysis with JAGS
+
+In order to analyze better the relationship between co2 and GDP we use JAGS to model more complex models that may help us to understand if at high incomes the relationship between co2 and GDP is still strong.
+
+```{r}
+#for each element of the data we plot the histogram
+par(mfrow=c(2, 3),pty="m")
+for(i in 1:ncol(data)){
+  hist(data[,i], freq = FALSE, main=colnames(data)[i],xlab="",cex.axis=0.75)
+  lines(density(data[,i]), col="red", lwd=2)
+}
+
+#create new dataset
+x <- within(data,rm("co2"))
+y <- data$co2
+
+```
+
+### Analysis of the distributions
+
+Let's analyze first the distributions in order to extract some good information from the data, since we can distinguish some shapes.
+
+Note: we do this part even if it was possible to get the same results with jags, however in this way we are more sure about the hypotesis.
+
+-   **energyUse** seems to have a gamma distribution since it grows rapidly and then decreases
+
+```{r}
+
+#shift the data
+arr <- x$energyUse+abs(min(x$energyUse))+0.00001
+fit <- fitdist(arr, "gamma")
+
+#get distribution parameters
+fit$estimate
+#get p-value
+ks.test(arr  , fit$estimate)$p.value
+
+plot(fit, lwd=2, )
+#accept this hypotesis
+x$energyUse <- arr
+```
+
+-   **GDP** seems to have a bimodal distribution: sum of two normal distributions
+
+```{r}
+fit <- normalmixEM(x$GDP, k = 2)
+
+#get distribution parameters
+fit$estimate
+
+summary(fit)
+
+plot(fit , density=TRUE, F)
+
+```
+
+-   **co2** our target variable seems normally distributed
+
+```{r}
+
+fit <- fitdist(y, "norm")
+fit$estimate
+#get p-value
+ks.test(arr  , fit$estimate)$p.value
+
+plot(fit, lwd=2, )
+
+
+```
+
+-   We don't make any assumption on the distibution of other covariates, since as noted from the analysis before they are less relevant for our task.
+
+### JAGS model no threshold on GDP
+
+We now start the analysis with JAGS and here we consider a simple model:
+
+$$
+\begin{split}
+&  y_i \sim \mathcal{N}(\beta_o+ X_i \beta,\sigma_y^2) \\
+& \beta_0 \sim \mathcal{N}(100) \\
+& \beta_i \sim \mathcal{N}(0, 100)\\
+& \sigma_y^{-2} \sim \mathcal{G}(0.01,0.01)  \\
+\end{split}
+$$
+
+```{r}
+n = nrow(x)
+#data for JAGS
+dataList <- list("n"=n,
+                 "y"=y,
+                 "x"=as.matrix(x),
+                 "p"=ncol(x))
+
+```
+
+```{r}
+model_string_1 <-textConnection("model{
+
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var.y)
+    mu[i] <- beta0 + inprod(x[i,],beta[])
+  }
+  
+  
+  
+  # Prior for beta
+  for(j in 1:p){
+    beta[j] ~ dnorm(0, 0.01)
+  }
+  beta0     ~ dnorm(0, 0.01)
+  
+  # Priors
+  inv.var.y   ~ dgamma(0.01, 0.01)
+  var.y <- 1/inv.var.y
+
+}"
+)
+
+burn = 15000
+n.iter = 5000
+n.adapt = 100
+thin = 2
+n.chains = 3
+
+model_1 = jags.model(model_string_1,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_1,n.iter=burn)
+samp1 = coda.samples(model_1,variable.names=c("beta0","beta","var.y"),thin=thin,n.iter=n.iter)
+summary(samp1)
+plot(samp1)
+
+```
+
+```{r}
+#use data to sample from posterior
+beta <- as.vector((summary(samp1)[1]$statistics)[c(1,2,3,4),1])
+beta0 <- as.vector((summary(samp1)[1]$statistics)[5,1])
+
+
+#predict
+y_hat <- beta0 + as.matrix(x) %*% beta
+
+#plot
+plot(y,y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+
+```
+
+### JAGS model considering covariate distribution energyUse
+
+We use as priors for alpha and beta parameters again a gamma distribution since they are conjugated, and try to estimate the hyperparameters of the gamma distribution.
+
+$$
+\begin{split}
+&  y_i \sim \mathcal{N}(\beta_o+ X_i \beta,\sigma_y^2) \\
+& X_1 \sim \mathcal{G} (alphaEnergy, betaEnergy) \\
+& \beta_0 \sim \mathcal{N}(0,100) \\
+& \beta_i \sim \mathcal{N}(0, 100)\\
+& \sigma_y^{-2} \sim \mathcal{G}(0.01,0.01)  \\
+& alphaEnergy \sim \mathcal{G} (1, 1) \\
+& betaEnergy \sim \mathcal{G} (1, 1)
+\end{split}
+$$
+
+```{r}
+model_string_2 <-textConnection("model{
+
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var.y)
+    mu[i] <- beta0 + inprod(x[i,],beta[])
+    x[i,1] ~ dgamma(alphaEnergy, betaEnergy)  #for energyUse covariate
+  }
+  
+  
+  # Prior for beta
+  for(j in 1:p){
+    beta[j] ~ dnorm(0, 0.01)
+  }
+  beta0     ~ dnorm(0, 0.01)
+  
+  # priors for energyUse
+  alphaEnergy ~ dgamma(1, 1)  # Gamma prior for alpha with shape=1, rate=1
+  betaEnergy ~ dgamma(1, 1)   # Gamma prior for beta with shape=1, rate=1
+  
+  # Priors
+  inv.var.y   ~ dgamma(0.01, 0.01)
+  var.y <- 1/inv.var.y
+
+}"
+)
+
+burn = 15000
+n.iter = 5000
+n.adapt = 100
+thin = 2
+n.chains = 3
+
+model_2 = jags.model(model_string_2,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_2,n.iter=burn)
+samp2 = coda.samples(model_2,variable.names=c("beta0","beta","var.y", "alphaEnergy", "betaEnergy"),thin=thin,n.iter=n.iter)
+summary(samp2)
+```
+
+```{r}
+for(k in 0:3){ plot(samp2[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+beta <- as.vector((summary(samp2)[1]$statistics)[c(2,3,4,5),1])
+beta0 <- as.vector((summary(samp2)[1]$statistics)[6,1])
+
+
+#predict
+y_hat <- beta0 + as.matrix(x) %*% beta
+
+#plot
+plot(y,y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+
+
+```
+
+The results are similar to the previous model. So knowing the distribution of energyUse doesn't help to improve the model. Furthermore the alpha and beta parameters have been estimated as expected
+
+Let's try adding GDP and assume we know alpha and beta of the Gamma distribution of energyUse. End we have an idea about the distribution of GDP.
+
+### JAGS model considering covariate distribution energyUse and GDP
+
+$$
+\begin{aligned}
+&\text{Likelihood:} \\
+&y_i \sim N(\mu_i, \sigma^2_y), \\
+&\mu_i = \beta_0 + \sum_{j=1}^{p} x_{ij} \beta_j, \\
+&x_{i1} \sim \text{Gamma}(\alpha_{\text{Energy}}, \beta_{\text{Energy}}), \quad \text{for energyUse covariate} \\
+&z_i \sim \text{Bernoulli}(p_{\text{GDP}}), \\
+&x_{i2} \sim N(\mu_1 z_i + \mu_2 (1 - z_i), \tau_3 z_i + \tau_4 (1 - z_i)), \quad \text{for GDP covariate} \\
+\\
+&\text{Priors:} \\
+&\beta_j \sim N(0, 100), \quad \text{for} \; j = 1, \ldots, p \\
+&\beta_0 \sim N(0, 100), \\
+\\
+&\sigma_y^{-2} \sim \text{Gamma}(0.01, 0.01), \quad \text{where} \; \sigma_y^2 = \frac{1}{\sigma_y^{-2}}, \\
+\\
+&\alpha_{\text{Energy}} = 2, \\
+&\beta_{\text{Energy}} = 2, \\
+\\
+&\mu_1 \sim N(-0.8, 100), \\
+&\mu_2 \sim N(0.5, 100), \\
+&\tau_3 \sim \text{Gamma}(0.01, 0.01), \\
+&\tau_4 \sim \text{Gamma}(0.01, 0.01), \\
+&p_{\text{GDP}} \sim \text{Beta}(1, 1).
+\end{aligned}
+$$
+
+```{r}
+model_string_3 <-textConnection("model{
+
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var.y)
+    mu[i] <- beta0 + inprod(x[i,],beta[])
+    x[i,1] ~ dgamma(alphaEnergy, betaEnergy)  #for energyUse covariate
+    #GDP covariate
+    z[i] ~ dbern(pGDP)
+    x[i,2] ~ dnorm(mu1 * z[i] + mu2 * (1 - z[i]), tau3 * z[i] + tau4 * (1 - z[i]))
+  }
+  
+  
+  # Prior for beta
+  for(j in 1:p){
+    beta[j] ~ dnorm(0, 0.01)
+  }
+  beta0     ~ dnorm(0, 0.01)
+  
+  # Priors prediction
+  inv.var.y   ~ dgamma(0.01, 0.01)
+  var.y <- 1/inv.var.y
+
+  # priors for energyUse
+  
+  alphaEnergy <-2
+  betaEnergy <- 2
+  
+  # priors for GDP
+  mu1 ~ dnorm(-0.8, 0.01)
+  mu2 ~ dnorm(0.5, 0.01)
+  tau3 ~ dgamma(0.01, 0.01)
+  tau4 ~ dgamma(0.01, 0.01) 
+  pGDP ~ dbeta(1, 1)
+  
+
+}"
+)
+
+burn = 15000
+n.iter = 5000
+n.adapt = 100
+thin = 2
+n.chains = 3
+
+model_3 = jags.model(model_string_3,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_3,n.iter=burn)
+samp3 = coda.samples(model_3,variable.names=c("beta0","beta","var.y", "mu1", "mu2", "pGDP" ),thin=thin,n.iter=n.iter)
+summary(samp3)
+```
+
+```{r}
+
+for(k in 0:3){ plot(samp3[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+beta <- as.vector((summary(samp3)[1]$statistics)[c(1,2,3,4),1])
+beta0 <- as.vector((summary(samp3)[1]$statistics)[5,1])
+
+
+#predict
+y_hat <- beta0 + as.matrix(x) %*% beta
+
+#plot
+plot(y,y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+
+
+```
+
+The prediction doesn't improve but it allowed us to extract the parameters and distribution of GDP.
+
+As before now we study more the importance of the coefficients.
+
+### Bayesian LASSO prior
+
+We use now lasso regression to select again the most important covariates in the model, and see if the model without some covariates can improve without degrading too much.
+
+$$
+\begin{aligned}
+& y_i \sim N(\beta_0 + X_i \beta, \sigma_y^2) \\
+& \beta_0 \sim N(0, 100) \\
+& \beta_i \sim \text{DE}(0, \sigma^2_b \sigma^2) \\
+& \sigma_y^2 \sim \text{IG}(0.01, 0.01) \\
+& \sigma^2_b \sim \text{IG}(0.01, 0.01)
+\end{aligned}
+$$
+
+```{r}
+model_string_lasso = textConnection("model{
+
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var)
+    mu[i] = beta0 + inprod(x[i,],beta[])
+  }
+
+  # Prior for beta
+  for(j in 1:p){
+    beta[j] ~ ddexp(0,inv.var*inv.var.b)
+  }
+
+  # Prior for the inverse variance
+  inv.var   ~ dgamma(0.01, 0.01)
+  inv.var.b ~ dgamma(0.01, 0.01)
+  beta0     ~ dnorm(0, 0.01)
+
+}")
+
+burn = 15000
+n.iter = 5000
+n.adapt = 100
+thin = 2
+n.chains = 3
+
+model_lasso = jags.model(model_string_lasso,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_lasso,n.iter=burn)
+samp_lasso = coda.samples(model_lasso,variable.names=c("beta0","beta"),thin=thin,n.iter=n.iter)
+summary(samp_lasso)
+
+
+```
+
+```{r}
+for(k in 0:1){ plot(samp_lasso[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+beta <- as.vector((summary(samp_lasso)[1]$statistics)[c(1,2,3,4),1])
+beta0 <- as.vector((summary(samp_lasso)[1]$statistics)[5,1])
+
+
+#predict
+y_hat <- beta0 + as.matrix(x) %*% beta
+
+#plot
+plot(y,y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+
+```
+
+-   Only beta[4] : urb is close to 0 so we can consider removing it from the model.
+
+-   Differently from before the internet coefficient isn't reduced much, this is probabily due to the correlation between internet and energyUse that doesn't allow to distinguish between the two.
+
+Now we concentrate on analyzing further the relationship between co2 and GDP, in particular we wanna understand if at high incomes the relationship between co2 and GDP is still strong, we try to find a threshold in GDP.
+
+### Find the threshold in GDP considering other variables
+
+The model has a form:
+
+$$
+\begin{split}
+&  y_i \sim \mathcal{N}(\mu_i,\sigma_y^2) \\
+&\mu_i = \beta_0 + \sum_{j=1}^{p-1} x_{ij} \beta_j  + betapoor \cdot \text{GDP}_i \cdot I(\text{GDP}_i < \text{threshold}) + betarich \cdot \text{GDP}_i \cdot I(\text{GDP}_i >= \text{threshold}) \\
+& \beta_0 \sim \mathcal{N}(100) \\
+& \beta_i \sim \mathcal{N}(0, 100)\\
+& betapoor \sim \mathcal{N}(0, 100)\\
+& betarich \sim \mathcal{N}(0, 100)\\
+& \sigma_y^{-2} \sim \mathcal{G}(0.01,0.01)  \\
+& \text{threshold}  \sim  \mathcal{U}(-2,1) \\ 
+\end{split}
+$$
+
+where $I(\text{GDP}_i >= \text{threshold})$ is an indicator function that is 1 if GDP is greater than the threshold and 0 otherwise.
+
+-   The threshold allows to add an extra effect for GDP. This term modifies the relationship between GDP and CO2 emissions when GDP surpasses a certain level, indicating that the effect of GDP on CO2 emissions might increase or change in nature beyond this threshold.
+
+-   GDP Impact (betarich and betapoor): We distinguish between the importance of gdp at low incomes and high incomes using beta_poor and beta_rich.
+
+-   The basic effect of GDP (is always present. However, the relationship between GDP and CO2 emissions may not be linear across all GDP levels. By including both betarich and betapoor, the model can flexibly account for the combined effects of GDP and Energy Use on CO2 emissions and also adjust for any changes in the GDP-CO2 relationship beyond a certain GDP level.
+
+-   We distinguish between the importance of gdp at low incomes and high incomes using beta_poor and beta_rich. beta_poor is used in case the country gdp is below the threshold.
+
+-   In this we use a single intercept: the assumption is the baseline CO2 emissions level (intercept) is the same across all GDP levels, but the rate of change (slope) with respect to GDP changes at the threshold.
+
+-   We restricted the are of the possible threshold to -2 and +1 in order to avoid to have a threshold that is too far from the data distribution, and probably due to outlier data.
+
+```{r}
+model_string_4 <- textConnection( "model {
+
+  for (i in 1:n) {
+   
+
+    y[i] ~ dnorm(mu[i], inv.var.y)
+    
+    mu[i] <- beta0 + x[i,1] * beta[1] + x[i,3] * beta[2] + x[i,4] * beta[3] + 
+    x[i,2] * beta_poor * (1 - indicator[i]) + 
+    x[i,2] * beta_rich * indicator[i]
+
+   indicator[i] <- (x[i,2] >= threshold)
+  }
+  
+
+  #Prior for the variance
+  inv.var.y ~ dgamma(0.001, 0.001)
+  var.y <- 1/inv.var.y
+  
+  # Prior for beta
+  for(j in 1:(p-1)){
+    beta[j] ~ dnorm(0, 0.01)
+  }
+  
+  beta0     ~ dnorm(0, 0.01)
+  beta_poor     ~ dnorm(0, 0.01)
+  beta_rich   ~ dnorm(0, 0.01)
+  
+  #Prior for threshold
+  threshold ~ dunif(min_threshold, max_threshold)
+
+  #Define thresholds
+  min_threshold <- -2
+  max_threshold <- 1
+  
+}")
+
+
+burn = 15000
+n.iter = 5000
+n.adapt = 100
+thin = 2
+n.chains = 3
+
+model_4 = jags.model(model_string_4,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_4,n.iter=burn)
+samp4 = coda.samples(model_4,variable.names=c("beta0","beta","beta_poor", "beta_rich", "var.y", "threshold" ),thin=thin,n.iter=n.iter)
+summary(samp4)
+
+```
+
+-   The coefficient beta_poor for poor countries is higher than the coefficient beta_rich for rich countries. This means that the relationship between CO2 emissions and GDP is stronger for poor countries than for rich countries.
+
+The threshold is the value of GDP that separates the two groups. And we are able to extract it, since Mean(GDP) = 27896.25 at ( 0.83353 GDP + 27896.25) = 27897 GDP , we added the mean in order to recenter the value
+
+```{r}
+
+for(k in 0:3){ plot(samp4[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+beta <- as.vector((summary(samp4)[1]$statistics)[c(1,2,3),1])
+beta0 <- as.vector((summary(samp4)[1]$statistics)[4,1])
+threshold <- as.vector((summary(samp4)[1]$statistics)[7,1])
+beta_poor <- as.vector((summary(samp4)[1]$statistics)[5,1])
+beta_rich <- as.vector((summary(samp4)[1]$statistics)[6,1])
+
+y_hat <- rep(0, n)
+
+#predict
+for (i in 1:n){
+  indicator <- as.numeric(x[i,2] >= threshold)
+  y_hat[i] <- beta0 + x[i,1] * beta[1] + x[i,3] * beta[2] + x[i,4] * beta[3] + x[i,2] * beta_poor * (1 - indicator) + x[i,2] * beta_rich *indicator
+}
+
+
+
+#plot
+plot(y , y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+```
+
+Visualize the threshold
+
+```{r}
+
+hist(x$GDP, freq = FALSE, , main="GDP and threshold", ylim = c(0, 0.6) ,cex.axis=0.75)
+abline(v=threshold, col="red", lwd=2)
+plot(x$GDP, ylab="GDP")
+abline(h=threshold, col="red", lwd=2)
+```
+
+Now show the result with some visualization
+
+In yellow we see how the importance of GDP over co2 changes, in particular both the intercept and the weight decrees for rich countries
+
+This chart is only to show the slope of the lines: the importance given by the coefficients for GDP.
+
+```{r}
+interval = seq(min(x$GDP), max(x$GDP), length.out = 100)
+dif = (beta_poor - beta_rich) * threshold
+
+#plot
+plot(interval, beta_poor*interval , type="l", col="red", lwd=1, xlab="GDP", ylab="CO2_influence", main="CO2 influence vs GDP for poor countries")
+lines(interval, beta_rich*interval + dif, col="blue", lwd=1)
+legend("topright", legend=c("equation_poor", "equation_rich", "threshold", "influence"), col=c("red", "blue", "green", "yellow"), lty=1, cex=0.8)
+abline(v=threshold, col="green", lwd=3)
+
+below_threshold = interval[interval < threshold]
+above_threshold = interval[interval >= threshold]
+lines(below_threshold, beta_poor*below_threshold , col=rgb(1, 1, 0, alpha = 0.9), lwd=12)
+lines(above_threshold, beta_rich*above_threshold + dif, col=rgb(1, 1, 0, alpha = 0.9), lwd=12)
+
+```
+
+### Find the threshold in GDP considering only GDP
+
+We consider a simpler model to try to estimate the threshold, here we consider only the variable GDP and we try to find a threshold that divides the GDP in two groups, we need to calculate also the intercepts.
+
+-   We again separate the importance of GDP at low and high incomes using beta_poor and beta_rich, to compare their individual effects
+-   We use beta_poor_0 and beta_rich_0 to represent the intercepts.
+
+The form of the model is:
+
+$$
+\begin{split}
+&  y_i \sim \mathcal{N}(\mu_i,\sigma_y^2) \\
+&\mu_i = (betapoor \cdot \text{GDP}_i + betapoor_0) \cdot I(\text{GDP}_i < \text{threshold}) + (betarich \cdot \text{GDP}_i + betarich_0) \cdot I(\text{GDP}_i >= \text{threshold}) \\
+& betapoor \sim \mathcal{N}(0, 100)\\
+& betarich \sim \mathcal{N}(0, 100)\\
+& betapoor_0 \sim \mathcal{N}(0, 100)\\
+& betarich_0 \sim \mathcal{N}(0, 100)\\
+& \sigma_y^{-2} \sim \mathcal{G}(0.01,0.01)  \\
+& \text{threshold}  \sim  \mathcal{U}(-1.5,1) \\ 
+\end{split}
+$$
+
+```{r}
+model_string_7 <- textConnection( "model {
+
+  for (i in 1:n) {
+   
+
+    y[i] ~ dnorm(mu[i], inv.var.y)
+    
+    mu[i] <-
+    (x[i,2] * beta_poor + beta_poor_0)  * (1 - indicator[i]) + 
+    (x[i,2] * beta_rich + beta_rich_0) * indicator[i]
+
+   indicator[i] <- (x[i,2] >= threshold)
+  }
+  
+
+  #Prior for the variance
+  inv.var.y ~ dgamma(0.001, 0.001)
+  var.y <- 1/inv.var.y
+  
+  beta_poor_0     ~ dnorm(0, 0.01)
+  beta_rich_0   ~ dnorm(0, 0.01)
+  beta_poor     ~ dnorm(0, 0.01)
+  beta_rich   ~ dnorm(0, 0.01)
+  
+  #Prior for threshold
+  threshold ~ dunif(min_threshold, max_threshold)
+
+  #Define thresholds
+  min_threshold <- -2
+  max_threshold <- 1
+  
+}")
+
+
+burn = 15000
+n.iter = 5000
+n.adapt = 1000
+thin = 2
+n.chains = 3
+
+model_7 = jags.model(model_string_7,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_7,n.iter=burn)
+samp7 = coda.samples(model_7,variable.names=c("beta_poor_0", "beta_poor" , "beta_rich_0", "beta_rich", "var.y", "threshold" ),thin=thin,n.iter=n.iter)
+summary(samp7)
+
+```
+
+```{r}
+
+for(k in 0:2){ plot(samp7[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+threshold <- as.vector((summary(samp7)[1]$statistics)[5,1])
+beta_poor_0 <- as.vector((summary(samp7)[1]$statistics)[2,1])
+beta_rich_0 <- as.vector((summary(samp7)[1]$statistics)[4,1])
+beta_poor <- as.vector((summary(samp7)[1]$statistics)[1,1])
+beta_rich <- as.vector((summary(samp7)[1]$statistics)[3,1])
+
+
+```
+
+```{r}
+
+hist(x$GDP, freq = FALSE, , main="GDP and threshold", ylim = c(0, 0.6) ,cex.axis=0.75)
+abline(v=threshold, col="red", lwd=2)
+plot(x$GDP, ylab="GDP")
+abline(h=threshold, col="red", lwd=2)
+```
+We confirm the hypotesis of the threshold, and we can see it has been estimated with a good precision
+
+### Threshold with different intercepets
+
+Finally a more general model assumes the the baseline CO2 emissions level and the rate of change with respect to GDP differ below and above the threshold.
+
+$$
+\begin{split}
+&  y_i \sim \mathcal{N}(\mu_i,\sigma_y^2) \\
+&\mu_i = \beta_0 + \sum_{j=1}^{p-1} x_{ij} \beta_j  + (betapoor \cdot \text{GDP}_i + betapoor_0) \cdot I(\text{GDP}_i < \text{threshold}) + (betarich \cdot \text{GDP}_i + betarich_0) \cdot I(\text{GDP}_i >= \text{threshold}) \\
+& \beta_0 \sim \mathcal{N}(100) \\
+& \beta_i \sim \mathcal{N}(0, 100)\\
+& betapoor \sim \mathcal{N}(0, 100)\\
+& betarich \sim \mathcal{N}(0, 100)\\
+& betapoor_0 \sim \mathcal{N}(0, 100)\\
+& betarich_0 \sim \mathcal{N}(0, 100)\\
+& \sigma_y^{-2} \sim \mathcal{G}(0.01,0.01)  \\
+& \text{threshold}  \sim  \mathcal{U}(-1.5,1) \\ 
+\end{split}
+$$
+
+-   The same considerations above are valid however here we have more variables and degrees of freedom.
+-   We again separate the importance of GDP at low and high incomes using beta_poor and beta_rich, to compare their individual effects
+-   We use beta_poor_0 and beta_rich_0 to represent the intercepts.
+-   threshold restricted in order to have a more precise solution.
+
+```{r}
+model_string_5 <- textConnection( "model {
+
+  for (i in 1:n) {
+   
+
+    y[i] ~ dnorm(mu[i], inv.var.y)
+    
+    mu[i] <- beta0 + x[i,1] * beta[1] + x[i,3] * beta[2] + x[i,4] * beta[3] + 
+    (x[i,2] * beta_poor + beta_poor_0)  * (1 - indicator[i]) + 
+    (x[i,2] * beta_rich + beta_rich_0) * indicator[i]
+
+   indicator[i] <- (x[i,2] >= threshold)
+  }
+  
+
+  #Prior for the variance
+  inv.var.y ~ dgamma(0.001, 0.001)
+  var.y <- 1/inv.var.y
+  
+  # Prior for beta
+  for(j in 1:(p-1)){
+    beta[j] ~ dnorm(0, 0.01)
+  }
+  
+  beta0     ~ dnorm(0, 0.01)
+  beta_poor_0     ~ dnorm(0, 0.01)
+  beta_rich_0   ~ dnorm(0, 0.01)
+  beta_poor     ~ dnorm(0, 0.01)
+  beta_rich   ~ dnorm(0, 0.01)
+  
+  #Prior for threshold
+  threshold ~ dunif(min_threshold, max_threshold)
+
+  #Define thresholds
+  min_threshold <- -1.5
+  max_threshold <- 1
+  
+}")
+
+
+burn = 30000
+n.iter = 10000
+n.adapt = 2000
+thin = 2
+n.chains = 3
+
+model_5 = jags.model(model_string_5,data=dataList,n.chains=n.chains,n.adapt=n.adapt)
+update(model_5,n.iter=burn)
+samp5 = coda.samples(model_5,variable.names=c("beta0","beta","beta_poor_0", "beta_poor" , "beta_rich_0", "beta_rich", "var.y", "threshold" ),thin=thin,n.iter=n.iter)
+summary(samp5)
+
+```
+
+-   In this case we can see the distinction between rich and poor countries is given by the sum of their coefficients and intercepts. The model is able to capture the different effects of GDP on CO2 emissions for rich and poor countries, and adjust the relationship between GDP and CO2 emissions once GDP exceeds a certain threshold.
+
+-   The threshold in this case has decreased.
+
+-   We had to increase the burns and n.iter in order to have a good convergence in particular for the threshold.
+
+-   This model was more sensible to starting positions of the chains and some difficulties in convergence, the threshold changed easily, a way to resolve this issue is to restrict the possible values of the threshold however in order to avoid doing strong assumptions we kept it in [-1.5 ,1] as in the model before.
+
+```{r}
+
+for(k in 0:4){ plot(samp5[,(2*k+1):(2*(k+1))]) }
+
+#use data to sample from posterior
+beta <- as.vector((summary(samp5)[1]$statistics)[c(1,2,3),1])
+beta0 <- as.vector((summary(samp5)[1]$statistics)[4,1])
+threshold <- as.vector((summary(samp5)[1]$statistics)[9,1])
+beta_poor <- as.vector((summary(samp5)[1]$statistics)[5,1])
+beta_poor_0 <- as.vector((summary(samp5)[1]$statistics)[6,1])
+beta_rich <- as.vector((summary(samp5)[1]$statistics)[7,1])
+beta_rich_0 <- as.vector((summary(samp5)[1]$statistics)[8,1])
+
+
+#predict
+for (i in 1:n){
+  indicator <- as.numeric(x[i,2] >= threshold)
+  y_hat[i] <- beta0 + x[i,1] * beta[1] + x[i,3] * beta[2] + x[i,4] * beta[3] + 
+    (x[i,2] * beta_poor + beta_poor_0) * (1 - indicator) +
+    (x[i,2] * beta_rich + beta_rich_0) *indicator
+}
+
+#plot
+plot(y,y_hat, xlab="y", ylab="y_hat", main="y vs y_hat")
+
+hist(data$co2, freq = FALSE, , main="true co2 emissions and their density (red) vs data from predictive (blue)", ylim = c(0, 0.6) ,cex.axis=0.75)
+lines(density(data$co2), col="red", lwd=2)
+lines(density(y_hat), col="blue", lwd=2)
+
+
+
+```
+
+We have much more uncertain about the position of the threshold and other parameters with respect to the previous scenario: multiple picks are visible in the distributions of the posteriors.
+
+```{r}
+
+hist(x$GDP, freq = FALSE, , main="GDP and threshold", ylim = c(0, 0.6) ,cex.axis=0.75)
+abline(v=threshold, col="red", lwd=2)
+plot(x$GDP, ylab="GDP")
+abline(h=threshold, col="red", lwd=2)
+```
+
+Lastly since in this scenario the weight importance of the GDP is given by two coefficients let's plot them.
+
+In yellow we see how the importance of GDP over co2 changes, we have a different result w.r.t the before situation.
+
+```{r}
+interval = seq(min(x$GDP), max(x$GDP), length.out = 100)
+
+below_threshold = interval[interval < threshold]
+above_threshold = interval[interval >= threshold]
+
+lim = c(min(beta_poor*below_threshold + beta_poor_0), max(beta_rich*above_threshold + beta_rich_0))
+
+#plot
+plot(interval, beta_poor*interval + beta_poor_0, type="l", col="red", lwd=1, xlab="GDP", ylab="CO2_influence", main="CO2 influence vs GDP for poor countries", ylim = lim)
+lines(interval, beta_rich*interval + beta_rich_0, col="blue", lwd=2)
+legend("topright", legend=c("equation_poor", "equation_rich", "threshold", "influence"), col=c("red", "blue", "green", "yellow"), lty=1, cex=0.8)
+abline(v=threshold, col="green", lwd=3)
+
+
+lines(below_threshold, beta_poor*below_threshold + beta_poor_0, col=rgb(1, 1, 0, alpha = 0.9), lwd=12)
+lines(above_threshold, beta_rich*above_threshold + beta_rich_0, col=rgb(1, 1, 0, alpha = 0.9), lwd=12)
+
+```
+
+### Conclusions GDP analysis
+
+We have analyzed the relationship between CO2 emissions and GDP, and we have found that the relationship is not linear and changes at a certain threshold. The threshold is the value of GDP that separates the two groups. The model is able to capture the different effects of GDP on CO2 emissions for rich and poor countries, and adjust the relationship between GDP and CO2 emissions once GDP exceeds a certain threshold.
+The threshold position changes according to the assumptions we make about the influence between CO2 and GDP and whether we consider the intercept or not.
+Even if in some cases we struggle in finding a stable threshold (e.g. when we keep a lot of variables free), we are sure that for "poor countries" the GDP influence over the CO2 emissions is stronger than for "rich countries".
