@@ -1,0 +1,303 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+SECTION 5: Clustering
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+rm(list=ls())
+```
+
+```{r}
+setwd("C:/Users/Simone/Downloads")
+
+library(rjags)
+library(caret)
+library(ggmcmc)
+
+options(scipen = 999)
+```
+
+```{r}
+rm(list = ls())
+
+CO2 <- read.csv("C:/Users/Simone/Downloads/CO2.csv")
+
+#Eliminate Luxembourg
+q=quantile(CO2$GDP,0.988)
+p=quantile(CO2$co2percap, 0.988)
+CO2 <- subset(CO2, CO2$GDP<q)
+CO2 <- subset(CO2, CO2$co2percap<p)
+```
+
+Since it may be useful to look into clustering, in order to find if some regularities are hidden in our data, three levels of analysis have been carried out: at first we tried to extract groups from single covariates, then some 2-dimensional and 3-dimensional models were tried, but this last without any significant result. Indeed the 3-dimensional model was only able to extract the outliers, while if those were excluded they simply created one big group containing all data points. 
+
+```{r}
+# Sample CO2 data
+CO2 <- read.csv("CO2.csv")
+
+print(CO2)
+
+# Group, and order the data
+prepared_data <- CO2 %>%
+  arrange(CO2$country, CO2$y) %>%
+  group_by(CO2$country)
+
+# Define the outliers
+countries_to_remove <- c("Trinidad and Tobago", "Luxembourg")
+
+# Remove rows where country is in countries_to_remove using subset
+prepared_data <- subset(prepared_data, !(country %in% countries_to_remove))
+print(prepared_data)
+
+#Normalization of covariates
+preproc <- preProcess(prepared_data[,c(4:10)], method=c("range"))
+norm <- predict(preproc, prepared_data[,c(4:10)])
+
+# Data preparation
+data_list <- list(
+  N = nrow(prepared_data),    # Number of data points
+  co2percap = prepared_data$co2percap,
+  EnergyUse = norm$EnergyUse * (1-prepared_data$Lowcarbon_energy/100),
+  GDP = norm$GDP,
+  pop = norm$pop,
+  internet = prepared_data$internet/prepared_data$pop,
+  urb = prepared_data$urb/100
+)
+
+# Combine the columns into a matrix
+data_matrix <- cbind(data_list$co2percap) #data_list$EnergyUse, data_list$GDP
+data_matrix2 <- cbind(data_list$co2percap, data_list$GDP)
+
+# Print the resulting matrix
+print(data_matrix)
+```
+
+The simpler, 1-dimensional, models were somewhat useful in finding some deeper informations in the data, but their findings are somewhat already visible in the histograms, therefore only the CO2 per capita clusters will be described. There are 3 clusters, of different value and number of points: the first group contained the most variability, it accounted for almost one seventh of the data points and contained the group of lowest polluting countries, with a mean of 1.25. The middle-polluting countries group was instead way more concentrated at a mean level of 7.24 and it contained more than four countries out of fifth. The remaining group was the heaviest-polluting, containing only around 5% of the countries, with a mean of 18.87, almost three times the middle group. The large difference in the values observated between the top polluters (like Canada, Australia and the USA) and the average group shows that a small percentage of the world population is responsible for a more relevant percentage of the pollution.
+
+  
+CO2percapita        Mean         SD
+mu[1]             1.2560    0.10527 
+mu[2]             7.2472    0.21785
+mu[3]            18.8770    0.51762       
+sigma[1]          3.7946    1.18170
+sigma[2]          0.1009    0.01014
+sigma[3]          0.6410    0.28479       
+w[1]              0.1345    0.02395
+w[2]              0.8170    0.02662
+w[3]              0.0485    0.01255      
+
+EnergyUse           Mean        SD
+mu[1]          4935.5858  127.6973
+mu[2]         23255.0733 1371.3197  
+mu[3]         44316.3451 5078.1127
+sigma[1]          0.0000    0.0000
+sigma[2]          0.0000    0.0000
+sigma[3]          0.0000    0.0000
+w[1]              0.1052    0.0182
+w[2]              0.5994    0.0935
+w[3]              0.2953    0.0929
+
+GDP                 Mean        SD
+mu[1]          8681.4802 1015.8235
+mu[2]         20042.7215 1823.9596 
+mu[3]         42230.8380 1819.0478
+sigma[1]          0.0000    0.0000
+sigma[2]          0.0000    0.0000
+sigma[3]          0.0000    0.0000 
+w[1]              0.3368    0.0695
+w[2]              0.1855    0.0727
+w[3]              0.4776    0.0434
+
+```{r}
+model_string = textConnection(
+"model{
+
+  # Likelihood
+  for(i in 1:N){
+    z[i] ~ dcat(w)
+    y[i] ~ dnorm(mu[z[i]],sigma[z[i]])
+  }
+  
+  # Prior
+  for(i in 1:3){
+    mu[i] ~ dnorm(0,0.01)
+    sigma[i] ~ dgamma(0.01,0.01)
+  }
+  
+  w ~ ddirich(a)
+  
+}")
+
+dataList = list(y=data_list$co2percap,N=354,a=rep(1,3))
+
+variable.names=c("mu","sigma","w", "z")
+nit = 20000
+thin = 1
+
+model = jags.model(model_string,data = dataList)
+
+update(model,n.iter=8000)
+output = coda.samples(model,variable.names=variable.names,n.iter=nit,thin=thin)
+
+# Increase the print limit
+options(max.print = 1000)  # Set to a high number
+summary(output)
+
+mu1_samples <- as.mcmc(output)[, "mu[1]"]
+mu2_samples <- as.mcmc(output)[, "mu[2]"]
+mu3_samples <- as.mcmc(output)[, "mu[3]"]
+
+# Plot trace and density
+plot(mu1_samples, main = "Trace and Density Plot for mu[1]", auto.layout = TRUE)
+plot(mu2_samples, main = "Trace and Density Plot for mu[2]", auto.layout = TRUE)
+plot(mu3_samples, main = "Trace and Density Plot for mu[3]", auto.layout = TRUE)
+```
+
+The 2-dimensional model correlating CO2 per capita and GDP is more meaningful, in particular the two group found have average GDP around 23000 and 40000, with the first group accounting for more than three times the point in the second group. The second group is also responsible of an average CO2 per capita production of 12.5, way higher than the 5.5 of the first group.
+
+                Mean     SD  
+mu[1,1]       5.5809 0.3823
+mu[2,1]      12.2621 1.5298
+mu[1,2]       0.2933 0.0275
+mu[2,2]       0.4997 0.0528
+w             0.2220 0.0723
+
+```{r}
+#2 dimension model, used to analyze the correlation between CO2 per capita and GDP
+
+model_string = textConnection(
+"model{
+
+  # Likelihood
+  for(i in 1:N){
+    z[i] ~ dbern(w)
+    y[i,1:2] ~ dmnorm(mu[z[i]+1,1:2],sigma[z[i]+1,1:2,1:2])
+      
+  }
+  
+  # Prior
+  mu[1,1] ~ dnorm(0,0.1)
+  mu[1,2] ~ dnorm(0,0.1)
+  mu[2,1] ~ dnorm(0,0.1)
+  mu[2,2] ~ dnorm(0,0.1)
+  w ~ dbeta(1,1)
+  
+  sigma[1,1,1] ~ dgamma(1,1)
+  sigma[1,1,2] ~ dnorm(0,0.1)
+  sigma[1,2,1] = sigma[1,1,2]
+  sigma[1,2,2] ~ dgamma(1,1)
+  
+  sigma[2,1,1] ~ dgamma(1,1)
+  sigma[2,1,2] ~ dnorm(0,0.1)
+  sigma[2,2,1] = sigma[2,1,2]
+  sigma[2,2,2] ~ dgamma(1,1)
+
+}")
+
+dataList = list(y=data_matrix2,N=354)
+variable.names=c("mu","sigma","w","z")
+nit = 2000
+thin = 1
+
+model = jags.model(model_string,data = dataList)
+
+update(model,n.iter=8000)
+output = coda.samples(model,variable.names=variable.names,n.iter=nit,thin=thin)
+
+# Increase the print limit
+options(max.print = 1000)  # Set to a high number
+summary(output)
+
+mu1_samples <- as.mcmc(output)[, "mu[1,1]"]
+mu2_samples <- as.mcmc(output)[, "mu[1,2]"]
+mu3_samples <- as.mcmc(output)[, "mu[2,1]"]
+mu4_samples <- as.mcmc(output)[, "mu[2,2]"]
+
+# Plot trace and density
+plot(mu1_samples, main = "Trace and Density Plot for mu[1,1]", auto.layout = TRUE)
+plot(mu2_samples, main = "Trace and Density Plot for mu[1,2]", auto.layout = TRUE)
+plot(mu3_samples, main = "Trace and Density Plot for mu[2,1]", auto.layout = TRUE)
+plot(mu4_samples, main = "Trace and Density Plot for mu[2,2]", auto.layout = TRUE)
+
+```
+
+```{r}
+#3-dimension model, only able to extract outliers, not working
+
+model_string = textConnection(
+"model{
+
+  # Likelihood
+  for(i in 1:N){
+    z[i] ~ dcat(w)
+    y[i,1:3] ~ dmnorm(mu[z[i],1:3],sigma[z[i],1:3,1:3])
+      
+  }
+  
+  # Prior
+  mu[1,1] ~ dnorm(0,0.1)
+  mu[1,2] ~ dnorm(0,0.1)
+  mu[1,3] ~ dnorm(0,0.1)
+  mu[2,1] ~ dnorm(0,0.1)
+  mu[2,2] ~ dnorm(0,0.1)
+  mu[2,3] ~ dnorm(0,0.1)
+  mu[3,1] ~ dnorm(0,0.1)
+  mu[3,2] ~ dnorm(0,0.1)
+  mu[3,3] ~ dnorm(0,0.1)
+  w ~ ddirich(a)
+  
+  sigma[1,1,1] ~ dgamma(1,1)
+  sigma[1,1,2] ~ dnorm(0,0.1)
+  sigma[1,1,3] ~ dnorm(0,0.1)
+  sigma[1,2,1] = sigma[1,1,2]
+  sigma[1,2,2] ~ dgamma(1,1)
+  sigma[1,2,3] ~ dnorm(0,0.1)
+  sigma[1,3,1] = sigma[1,1,3]
+  sigma[1,3,2] = sigma[1,2,3]
+  sigma[1,3,3] ~ dgamma(1,1)
+  
+  sigma[2,1,1] ~ dgamma(1,1)
+  sigma[2,1,2] ~ dnorm(0,0.1)
+  sigma[2,1,3] ~ dnorm(0,0.1)
+  sigma[2,2,1] = sigma[2,1,2]
+  sigma[2,2,2] ~ dgamma(1,1)
+  sigma[2,2,3] ~ dnorm(0,0.1)
+  sigma[2,3,1] = sigma[2,1,3]
+  sigma[2,3,2] = sigma[2,2,3]
+  sigma[2,3,3] ~ dgamma(1,1)
+  
+  sigma[3,1,1] ~ dgamma(1,1)
+  sigma[3,1,2] ~ dnorm(0,0.1)
+  sigma[3,1,3] ~ dnorm(0,0.1)
+  sigma[3,2,1] = sigma[3,1,2]
+  sigma[3,2,2] ~ dgamma(1,1)
+  sigma[3,2,3] ~ dnorm(0,0.1)
+  sigma[3,3,1] = sigma[3,1,3]
+  sigma[3,3,2] = sigma[3,2,3]
+  sigma[3,3,3] ~ dgamma(1,1)
+
+}")
+
+dataList = list(y=data_matrix,N=354,a=rep(1,3))
+
+variable.names=c("mu","sigma","w","z")
+nit = 2000
+thin = 1
+
+model = jags.model(model_string,data = dataList)
+
+update(model,n.iter=8000)
+output = coda.samples(model,variable.names=variable.names,n.iter=nit,thin=thin)
+
+# Increase the print limit
+options(max.print = 1000)  # Set to a high number
+summary(output)
+```
+
+

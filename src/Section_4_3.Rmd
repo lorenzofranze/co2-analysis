@@ -1,0 +1,687 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+SECTION 4.3: Time-series model
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+rm(list=ls())
+```
+
+```{r}
+setwd("C:/Users/Simone/Downloads")
+
+library(rjags)
+library(caret)
+library(ggmcmc)
+
+options(scipen = 999)
+```
+
+```{r}
+rm(list = ls())
+
+CO2 <- read.csv("C:/Users/Simone/Downloads/CO2.csv")
+
+```
+
+Considering the past observation as covariates we can greatly improve
+the prediction in our situation, since the CO2 per capita of a whole
+country is a value not prone to peaks and sudden changes. Since each
+country has 5 points associated (with the exception of Belarus, Hong
+Kong, United Arab Emirates, which are excluded from the dataset for this
+section), corresponding to the period 2005-2009 we will be able to
+create a model which only focus on the last observation and the main
+covariates, to obtain 4 periods for each country. It must also be
+noticed that the first two prediction (2006-2007) will refer to a
+standard period, while the other two are taken during the 2008 world
+economical crisis. This means the prediction will likely have less
+accuracy from a period to the other, and more variability could be
+present in the later years.
+
+```{r}
+# Sample CO2 data
+CO2 <- read.csv("CO2.csv")
+
+print(CO2)
+
+# Group, and order the data
+prepared_data <- CO2 %>%
+  arrange(CO2$country, CO2$y) %>%
+  group_by(CO2$country)
+
+# Define the countries that have not 5 points
+#countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates", "Estonia", "South Korea")
+countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates")
+
+# Remove rows where country is in countries_to_remove using subset
+#prepared_data <- subset(prepared_data, !(country %in% countries_to_remove | GDP > 30000))
+prepared_data <- subset(prepared_data, !(country %in% countries_to_remove))
+
+#Normalization of covariates
+preproc <- preProcess(prepared_data[,c(4:10)], method=c("range"))
+norm <- predict(preproc, prepared_data[,c(4:10)])
+
+# Data preparation
+data_list <- list(
+  N = nrow(prepared_data),    # Number of data points
+  co2percap = prepared_data$co2percap,
+  EnergyUse = norm$EnergyUse * (1-prepared_data$Lowcarbon_energy/100),
+  GDP = norm$GDP,
+  pop = norm$pop,
+  internet = prepared_data$internet/prepared_data$pop,
+  urb = prepared_data$urb/100
+)
+
+modelAR.string <- "
+model {
+  ## parameters: alpha, tau, m0
+  # likelihood 
+  for (h in 0:40) {
+    mu[1+h*5] <- Y[1+h*5]
+    Yp[1+h*5] =  mu[1+h*5]
+    for (i in (2+h*5):(4+h*5)) {
+      Y[i] ~ dnorm(mu[i], tau)
+      mu[i] <- alpha * Y[i - 1] + m1 * x1[i - 1] + m2 * x2[i - 1] + m6 * (x1[i]-x1[i-1]) + m7 * (x2[i]-x2[i-1]) 
+      Yp[i] ~ dnorm(mu[i], tau) # prediction in sample
+    }
+  }
+  
+  # prediction out of sample 
+  for (h in 0:40) {
+    ypOut[5+h*5] ~ dnorm(alpha * Y[4+h*5] + m1 * x1[4+h*5] + m2 * x2[4+h*5] + m6 * (x1[5+h*5]-x1[4+h*5]) + m7 * (x2[5+h*5]-x2[4+h*5]), tau) 
+
+  }
+  
+  # parameters and priors
+  sigma2 <- 1 / tau
+  alpha ~ dunif(-1.5, 1.5)
+  tau ~ dgamma(0.1, 10)
+  m0 ~ dnorm(0.0, 1.0E-4)
+  m1 ~ dnorm(0.0, 1.0E-4)
+  m2 ~ dnorm(0.0, 1.0E-4)
+  m6 ~ dnorm(0.0, 1.0E-4)
+  m7 ~ dnorm(0.0, 1.0E-4)
+}"
+
+# prepare the data 
+Ntot=length(prepared_data$co2percap)
+Npred=0 # horizon for out-of-sample prediction
+N=Ntot-Npred
+data_subsample=data_list$co2percap[1:N]
+cov1_subsample=data_list$EnergyUse[1:N]
+cov2_subsample=data_list$GDP[1:N]
+cov3_subsample=data_list$pop[1:N]
+cov4_subsample=data_list$internet[1:N]
+cov5_subsample=data_list$urb[1:N]
+
+line_data <- list("Y" = data_subsample,"N" = length(data_subsample),
+                  "x1" = cov1_subsample,
+                  "x2" = cov2_subsample,
+                  "x3" = cov3_subsample,
+                  "x4" = cov4_subsample,
+                  "x5" = cov5_subsample
+                  )
+
+outputmcmcAR <- jags(model.file=textConnection(modelAR.string),
+                     data=line_data,
+                     parameters.to.save= c("alpha","sigma2", "m1", "m2", "m6","m7"), 
+                     n.adapt=1000, n.iter=10000,n.chains = 1,n.burnin = 2000)
+
+gr = summary(outputmcmcAR)
+options(width = 40)
+options(scipen = 999)
+gr
+```
+
+The model shows how the last observation contributes with more than 90%
+of its original value to the prediction, with the covariate representing
+the difference between the EnergyUse of the current and the past year,
+called m6, which is the only one that has not the zero axis in its 95%
+credible interval.
+
+The next step done is to separate the dataset in two parts, assuming
+that more variability could be present when the economic crisis
+happened. The first model uses period 2005-2006 to predict 2006-2007,
+while the second uses 2007-2008 to predict 2008-2009.
+
+```{r}
+#Period 2005-2007
+
+modelAR.string <- "
+model {
+  ## parameters: alpha, tau, m0
+  # likelihood 
+  for (h in 0:40) {
+    mu[1+h*5] <- Y[1+h*5]
+    Yp[1+h*5] =  mu[1+h*5]
+    for (i in (2+h*5):(2+h*5)) {
+      Y[i] ~ dnorm(mu[i], tau)
+      mu[i] <- alpha * Y[i - 1] + m1 * x1[i - 1] + m2 * x2[i - 1] + m6 * (x1[i]-x1[i-1]) + m7 * (x2[i]-x2[i-1]) 
+      Yp[i] ~ dnorm(mu[i], tau) # prediction in sample
+    }
+  }
+  
+  # prediction out of sample 
+  for (h in 0:40) {
+    ypOut[3+h*5] ~ dnorm(alpha * Y[2+h*5] + m1 * x1[2+h*5] + m2 * x2[2+h*5] + m6 * (x1[3+h*5]-x1[2+h*5]) + m7 * (x2[3+h*5]-x2[2+h*5]), tau) 
+
+  }
+  
+  # parameters and priors
+  sigma2 <- 1 / tau
+  alpha ~ dunif(-1.5, 1.5)
+  tau ~ dgamma(0.1, 10)
+  m0 ~ dnorm(0.0, 1.0E-4)
+  m1 ~ dnorm(0.0, 1.0E-4)
+  m2 ~ dnorm(0.0, 1.0E-4)
+  m6 ~ dnorm(0.0, 1.0E-4)
+  m7 ~ dnorm(0.0, 1.0E-4)
+}"
+
+# prepare the data 
+Ntot=length(prepared_data$co2percap)
+Npred=0 # horizon for out-of-sample prediction
+N=Ntot-Npred
+data_subsample=data_list$co2percap[1:N]
+cov1_subsample=data_list$EnergyUse[1:N]
+cov2_subsample=data_list$GDP[1:N]
+cov3_subsample=data_list$pop[1:N]
+cov4_subsample=data_list$internet[1:N]
+cov5_subsample=data_list$urb[1:N]
+
+line_data <- list("Y" = data_subsample,"N" = length(data_subsample),
+                  "x1" = cov1_subsample,
+                  "x2" = cov2_subsample,
+                  "x3" = cov3_subsample,
+                  "x4" = cov4_subsample,
+                  "x5" = cov5_subsample
+                  )
+
+outputmcmcAR <- jags(model.file=textConnection(modelAR.string),
+                     data=line_data,
+                     parameters.to.save= c("alpha","sigma2", "m1", "m2", "m6","m7"), 
+                     n.adapt=1000, n.iter=10000,n.chains = 1,n.burnin = 2000)
+
+gr = summary(outputmcmcAR)
+options(width = 40)
+options(scipen = 999)
+gr
+```
+
+```{r}
+#Period 2007-2009
+
+modelAR.string <- "
+model {
+  ## parameters: alpha, tau, m0
+  # likelihood 
+  for (h in 0:40) {
+    mu[3+h*5] <- Y[3+h*5]
+    Yp[3+h*5] =  mu[3+h*5]
+    for (i in (4+h*5):(4+h*5)) {
+      Y[i] ~ dnorm(mu[i], tau)
+      mu[i] <- alpha * Y[i - 1] + m1 * x1[i - 1] + m2 * x2[i - 1] + m6 * (x1[i]-x1[i-1]) + m7 * (x2[i]-x2[i-1]) 
+      Yp[i] ~ dnorm(mu[i], tau) # prediction in sample
+    }
+  }
+  
+  # prediction out of sample 
+  for (h in 0:40) {
+    ypOut[5+h*5] ~ dnorm(alpha * Y[4+h*5] + m1 * x1[4+h*5] + m2 * x2[4+h*5] + m6 * (x1[5+h*5]-x1[4+h*5]) + m7 * (x2[5+h*5]-x2[4+h*5]), tau) 
+
+  }
+  
+  # parameters and priors
+  sigma2 <- 1 / tau
+  alpha ~ dunif(-1.5, 1.5)
+  tau ~ dgamma(0.1, 10)
+  m0 ~ dnorm(0.0, 1.0E-4)
+  m1 ~ dnorm(0.0, 1.0E-4)
+  m2 ~ dnorm(0.0, 1.0E-4)
+  m6 ~ dnorm(0.0, 1.0E-4)
+  m7 ~ dnorm(0.0, 1.0E-4)
+}"
+
+# prepare the data 
+Ntot=length(prepared_data$co2percap)
+Npred=0 # horizon for out-of-sample prediction
+N=Ntot-Npred
+data_subsample=data_list$co2percap[1:N]
+cov1_subsample=data_list$EnergyUse[1:N]
+cov2_subsample=data_list$GDP[1:N]
+cov3_subsample=data_list$pop[1:N]
+cov4_subsample=data_list$internet[1:N]
+cov5_subsample=data_list$urb[1:N]
+
+line_data <- list("Y" = data_subsample,"N" = length(data_subsample),
+                  "x1" = cov1_subsample,
+                  "x2" = cov2_subsample,
+                  "x3" = cov3_subsample,
+                  "x4" = cov4_subsample,
+                  "x5" = cov5_subsample
+                  )
+
+outputmcmcAR <- jags(model.file=textConnection(modelAR.string),
+                     data=line_data,
+                     parameters.to.save= c("alpha","sigma2", "m1", "m2", "m6","m7"), 
+                     n.adapt=1000, n.iter=10000,n.chains = 1,n.burnin = 2000)
+
+gr = summary(outputmcmcAR)
+options(width = 40)
+options(scipen = 999)
+gr
+```
+
+The two new models confirm in a way what was expected: -\>Alpha has a
+lower standard deviation in the first period, since it sees data from a
+period where the situation was more stable and the prediction of the
+year before was more useful. -\>Sigma2 is lower in the first period,
+since the mean of the predicted observation is predicted in a more
+accurate way when the crisis is not present. -\>Both m1, m6 (which are
+the parameters related to the energy use) have an higher variance in the
+"crisis period" and the importance of the difference in energy use
+decreases a lot. -\>Finally m7 instead increases in relevance during the
+crisis, but it has a variance which is extremely high, with a credible
+region which comprehends 0. This probably derives by the fact that in
+the crisis period the GDP-difference is somewhat used to understand how
+much the crisis impacted. -\>Lastly also the Deviance, inversely
+correlated to the likelihood of the model of explaining the data, is
+lower in the standard period.
+
+Even if the data contribute to create 2 somewhat different models with
+respect to the periods 2005-2007 and 2007-2009, the fact that the time
+series are long only 5 data points and the fact that the co2percapita of
+a nation is usually a stable value, means that the prediction results to
+be satisfactory even with few points, also using just the period
+2005-2006 to predict the period 2006-2009.
+
+The following are the In-sample and Out-of-sample prediction of the
+first model (period 2005-2008 used to predict year 2008-2009), this last
+with the computation of the Mean Square Error and the R squared index,
+all the other are not included since all graphs are pretty similar, as
+it can be seen by the table of the MSE and R squared below:
+
+```{r}
+# Generating the sequence
+start_points <- seq(2, 355, by = 5)  # Sequence starting from 2, incrementing by 5
+end_points <- start_points + 1 # Next point in the sequence
+end2_points <- start_points + 2 # Next point in the sequence
+points <- sort(c(start_points, end_points))  # Combine and sort the sequences
+points <- sort(c(points, end2_points))  # Combine and sort the sequences
+print(points)
+# Ensure the points do not exceed 355
+points <- points[points <= 100]
+
+# Subset the data according to the generated points
+yp_subset <- outputmcmcAR$mean$Yp[points]
+q1_subset <- outputmcmcAR$q2.5$Yp[points]
+q2_subset <- outputmcmcAR$q97.5$Yp[points]
+y_subset  <- data_subsample[points] 
+
+# Update the sequence for the x-axis
+t_subset <- points
+
+# Plotting the data
+plot(t_subset, yp_subset, col = "blue", ylab = "CO2", xlab="Data",
+     main = "In-sample predicted data (blue)")
+points(t_subset, y_subset, col="red")
+lines(t_subset, q1_subset, type = "l", col = "blue", lwd = 1.5)
+lines(t_subset, q2_subset, type = "l", col = "blue", lwd = 1.5)
+
+points<-seq(5, 355, by = 5)
+#out2_points <- out_points + 1
+#out3_points <- out_points - 1 # Next point in the sequence
+#out2_points <- sort(c(out3_points, out2_points))
+#points <- sort(c(out_points, out2_points))  # Combine and sort the sequences
+#
+points <- points[points <= 100]
+
+y_subset  <- data_subsample[points]
+yp_pred=outputmcmcAR$mean$ypOut[points]
+q1_pred=outputmcmcAR$q2.5$ypOut[points]
+q2_pred=outputmcmcAR$q97.5$ypOut[points]
+#
+plot(points,y_subset,col="red",ylab="CO2",
+     main= "Out-of-sample prediction (blue)")
+lines(points,yp_pred,type="p",pch="*",col="blue",)
+lines(points,q1_pred,type="l",col="blue",lwd = 1.5)
+lines(points,q2_pred,type="l",col="blue",lwd = 1.5)
+```
+
+Here the MSE and R2 there are reported below the period used for
+training and the predicted period, it can be noticed all combinations of
+MSE and R2 describe similarly satisfactory levels of uncertainty:
+
+```         
+  05-06 06-09   05-07 07-09   05-08 08-09
+```
+
+MSE: 0.439 0.551 0.924 R2: 0.986 0.982 0.969
+
+------------------------------------------------------------------------
+
+```         
+  05-06 06-07
+```
+
+MSE: 0.173 R2: 0.994
+
+```         
+  05-06 07-08   05-07 07-08
+```
+
+MSE: 0.154 0.150 R2: 0.995 0.995
+
+```         
+  05-06 08-09   05-07 08-09   05-08 08-09
+```
+
+MSE: 0.990 0.952 0.924 R2: 0.967 0.968 0.969
+
+Finally, the last point is introducing a threshold. Trying to separate
+the richest and poorest country, the results are indeed more accurate
+than with all data together, it was also visible that the difficulties
+in predicting the crisis period data are still present. This
+difficulties could be increased by the small number of data points,
+unable to explain the variability in a context where a switchpoint,
+several covariates and a threshold are present.
+
+```{r}
+#HIGH-GDP CASE
+# Sample CO2 data
+CO2 <- read.csv("CO2.csv")
+
+print(CO2)
+
+# Group, and order the data
+prepared_data <- CO2 %>%
+  arrange(CO2$country, CO2$y) %>%
+  group_by(CO2$country)
+
+# Define the countries that have not 5 points
+countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates", "Estonia", "South Korea")
+#countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates")
+
+# Remove rows where country is in countries_to_remove using subset
+prepared_data <- subset(prepared_data, !(country %in% countries_to_remove | GDP > 30000))
+#prepared_data <- subset(prepared_data, !(country %in% countries_to_remove))
+
+#Normalization of covariates
+preproc <- preProcess(prepared_data[,c(4:10)], method=c("range"))
+norm <- predict(preproc, prepared_data[,c(4:10)])
+
+# Data preparation
+data_list <- list(
+  N = nrow(prepared_data),    # Number of data points
+  co2percap = prepared_data$co2percap,
+  EnergyUse = norm$EnergyUse * (1-prepared_data$Lowcarbon_energy/100),
+  GDP = norm$GDP,
+  pop = norm$pop,
+  internet = prepared_data$internet/prepared_data$pop,
+  urb = prepared_data$urb/100
+)
+
+# Print the resulting data
+print(prepared_data)
+
+modelAR.string <- "
+model {
+  ## parameters: alpha, tau, m0
+  # likelihood 
+  for (h in 0:40) {
+    mu[1+h*5] <- Y[1+h*5]
+    Yp[1+h*5] =  mu[1+h*5]
+    for (i in (2+h*5):(4+h*5)) {
+      Y[i] ~ dnorm(mu[i], tau)
+      mu[i] <- alpha * Y[i - 1] + m1 * x1[i - 1] + m2 * x2[i - 1] + m6 * (x1[i]-x1[i-1]) + m7 * (x2[i]-x2[i-1]) 
+      Yp[i] ~ dnorm(mu[i], tau) # prediction in sample
+    }
+  }
+  
+  # prediction out of sample 
+  for (h in 0:40) {
+    ypOut[5+h*5] ~ dnorm(alpha * Y[4+h*5] + m1 * x1[4+h*5] + m2 * x2[4+h*5] + m6 * (x1[5+h*5]-x1[4+h*5]) + m7 * (x2[5+h*5]-x2[4+h*5]), tau) 
+
+  }
+  
+  # parameters and priors
+  sigma2 <- 1 / tau
+  alpha ~ dunif(-1.5, 1.5)
+  tau ~ dgamma(0.1, 10)
+  m0 ~ dnorm(0.0, 1.0E-4)
+  m1 ~ dnorm(0.0, 1.0E-4)
+  m2 ~ dnorm(0.0, 1.0E-4)
+  m6 ~ dnorm(0.0, 1.0E-4)
+  m7 ~ dnorm(0.0, 1.0E-4)
+}"
+
+# prepare the data 
+Ntot=length(prepared_data$co2percap)
+Npred=0 # horizon for out-of-sample prediction
+N=Ntot-Npred
+data_subsample=data_list$co2percap[1:N]
+cov1_subsample=data_list$EnergyUse[1:N]
+cov2_subsample=data_list$GDP[1:N]
+cov3_subsample=data_list$pop[1:N]
+cov4_subsample=data_list$internet[1:N]
+cov5_subsample=data_list$urb[1:N]
+
+line_data <- list("Y" = data_subsample,"N" = length(data_subsample),
+                  "x1" = cov1_subsample,
+                  "x2" = cov2_subsample,
+                  "x3" = cov3_subsample,
+                  "x4" = cov4_subsample,
+                  "x5" = cov5_subsample
+                  )
+
+outputmcmcAR <- jags(model.file=textConnection(modelAR.string),
+                     data=line_data,
+                     parameters.to.save= c("alpha","sigma2", "m1", "m2", "m6","m7", "Yp", "ypOut"), 
+                     n.adapt=1000, n.iter=10000,n.chains = 1,n.burnin = 2000)
+
+gr = summary(outputmcmcAR)
+options(width = 40)
+options(scipen = 999)
+gr
+
+points<-seq(5, 355, by = 5)
+#out2_points <- out_points + 1
+#out3_points <- out_points - 1 # Next point in the sequence
+#out2_points <- sort(c(out3_points, out2_points))
+#points <- sort(c(out_points, out2_points))  # Combine and sort the sequences
+#
+points <- points[points <= 100]
+
+y_subset  <- data_subsample[points]
+yp_pred=outputmcmcAR$mean$ypOut[points]
+
+mse <- function(actual, predicted) {
+  mean((actual - predicted)^2)
+}
+
+r_squared <- function(actual, predicted) {
+  1 - (sum((actual - predicted)^2) / sum((actual - mean(actual))^2))
+}
+
+# Assume y_subset and yp_pred are your vectors
+actual <- na.omit(y_subset)
+predicted <- yp_pred
+
+actual <- as.numeric(y_subset)
+predicted <- as.numeric(yp_pred)
+
+print(actual)
+print(predicted)
+
+# Calculate the metrics
+mse_value <- mse(actual, predicted)
+r_squared_value <- r_squared(actual, predicted)
+
+print(mse_value)
+print(r_squared_value)
+
+
+
+
+
+
+
+
+
+#LOW-GDP CASE
+
+# Sample CO2 data
+CO2 <- read.csv("CO2.csv")
+
+print(CO2)
+
+# Group, and order the data
+prepared_data <- CO2 %>%
+  arrange(CO2$country, CO2$y) %>%
+  group_by(CO2$country)
+
+# Define the countries that have not 5 points
+countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates", "Estonia", "South Korea")
+#countries_to_remove <- c("Belarus", "Hong Kong", "United Arab Emirates")
+
+# Remove rows where country is in countries_to_remove using subset
+prepared_data <- subset(prepared_data, !(country %in% countries_to_remove | GDP < 30000))
+#prepared_data <- subset(prepared_data, !(country %in% countries_to_remove))
+
+#Normalization of covariates
+preproc <- preProcess(prepared_data[,c(4:10)], method=c("range"))
+norm <- predict(preproc, prepared_data[,c(4:10)])
+
+# Data preparation
+data_list <- list(
+  N = nrow(prepared_data),    # Number of data points
+  co2percap = prepared_data$co2percap,
+  EnergyUse = norm$EnergyUse * (1-prepared_data$Lowcarbon_energy/100),
+  GDP = norm$GDP,
+  pop = norm$pop,
+  internet = prepared_data$internet/prepared_data$pop,
+  urb = prepared_data$urb/100
+)
+
+# Print the resulting data
+print(prepared_data)
+
+modelAR.string <- "
+model {
+  ## parameters: alpha, tau, m0
+  # likelihood 
+  for (h in 0:27) {
+    mu[1+h*5] <- Y[1+h*5]
+    Yp[1+h*5] =  mu[1+h*5]
+    for (i in (2+h*5):(4+h*5)) {
+      Y[i] ~ dnorm(mu[i], tau)
+      mu[i] <- alpha * Y[i - 1] + m1 * x1[i - 1] + m2 * x2[i - 1] + m6 * (x1[i]-x1[i-1]) + m7 * (x2[i]-x2[i-1]) 
+      Yp[i] ~ dnorm(mu[i], tau) # prediction in sample
+    }
+  }
+  
+  # prediction out of sample 
+  for (h in 0:27) {
+    ypOut[5+h*5] ~ dnorm(alpha * Y[4+h*5] + m1 * x1[4+h*5] + m2 * x2[4+h*5] + m6 * (x1[5+h*5]-x1[4+h*5]) + m7 * (x2[5+h*5]-x2[4+h*5]), tau) 
+
+  }
+  
+  # parameters and priors
+  sigma2 <- 1 / tau
+  alpha ~ dunif(-1.5, 1.5)
+  tau ~ dgamma(0.1, 10)
+  m0 ~ dnorm(0.0, 1.0E-4)
+  m1 ~ dnorm(0.0, 1.0E-4)
+  m2 ~ dnorm(0.0, 1.0E-4)
+  m6 ~ dnorm(0.0, 1.0E-4)
+  m7 ~ dnorm(0.0, 1.0E-4)
+}"
+
+# prepare the data 
+Ntot=length(prepared_data$co2percap)
+Npred=0 # horizon for out-of-sample prediction
+N=Ntot-Npred
+data_subsample=data_list$co2percap[1:N]
+cov1_subsample=data_list$EnergyUse[1:N]
+cov2_subsample=data_list$GDP[1:N]
+cov3_subsample=data_list$pop[1:N]
+cov4_subsample=data_list$internet[1:N]
+cov5_subsample=data_list$urb[1:N]
+
+line_data <- list("Y" = data_subsample,"N" = length(data_subsample),
+                  "x1" = cov1_subsample,
+                  "x2" = cov2_subsample,
+                  "x3" = cov3_subsample,
+                  "x4" = cov4_subsample,
+                  "x5" = cov5_subsample
+                  )
+
+outputmcmcAR <- jags(model.file=textConnection(modelAR.string),
+                     data=line_data,
+                     parameters.to.save= c("alpha","sigma2", "m1", "m2", "m6","m7", "Yp", "ypOut"), 
+                     n.adapt=1000, n.iter=10000,n.chains = 1,n.burnin = 2000)
+
+gr = summary(outputmcmcAR)
+options(width = 40)
+options(scipen = 999)
+gr
+
+points<-seq(5, 355, by = 5)
+#out2_points <- out_points + 1
+#out3_points <- out_points - 1 # Next point in the sequence
+#out2_points <- sort(c(out3_points, out2_points))
+#points <- sort(c(out_points, out2_points))  # Combine and sort the sequences
+#
+points <- points[points <= 100]
+
+y_subset  <- data_subsample[points]
+yp_pred=outputmcmcAR$mean$ypOut[points]
+
+mse <- function(actual, predicted) {
+  mean((actual - predicted)^2)
+}
+
+r_squared <- function(actual, predicted) {
+  1 - (sum((actual - predicted)^2) / sum((actual - mean(actual))^2))
+}
+
+# Assume y_subset and yp_pred are your vectors
+actual <- na.omit(y_subset)
+predicted <- yp_pred
+
+actual <- as.numeric(y_subset)
+predicted <- as.numeric(yp_pred)
+
+print(actual)
+print(predicted)
+
+# Calculate the metrics
+mse_value <- mse(actual, predicted)
+r_squared_value <- r_squared(actual, predicted)
+
+print(mse_value)
+print(r_squared_value)
+```
+
+Both accuracy found trying to predict only a portion of the countries is
+actually higher than the accuracy we had using all datapoint, even if
+this happens without any parametrer changing its sign or its magnitude.
+This could mean that the two groups present different characteristics
+and in particular since the High-GDP groups present the highest
+accuracy, we could think there is less variability in the general CO2
+per capita value once the threshold is reached (even if the GDP and
+GDP-difference parameter by themselves are not far from zero).
+
+All-data 05-08 to predict 08-09: MSE: 0.924 R2: 0.969
+
+High-GDP 05-08 to predict 08-09: MSE: 0.041 R2: 0.995
+
+Low-GDP 05-08 to predict 08-09: MSE: 0.070 R2: 0.995

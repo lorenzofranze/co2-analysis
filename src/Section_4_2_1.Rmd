@@ -1,0 +1,118 @@
+---
+title: "Projects"
+author: "Federico Bassetti"
+date: "27/5/2022"
+output: html_notebook
+---
+
+SECTION 4.2.1: Threshold
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+rm(list=ls())
+```
+
+```{r}
+setwd("C:/Users/Simone/Downloads")
+
+library(rjags)
+library(caret)
+library(ggmcmc)
+
+options(scipen = 999)
+```
+
+```{r}
+rm(list = ls())
+
+CO2 <- read.csv("C:/Users/Simone/Downloads/CO2.csv")
+
+#Eliminate Luxembourg from data, since it's an outlier for both GDP and CO2 and it represent a unique case that we aren't able to explain with our data
+q=quantile(CO2$GDP,0.988)
+p=quantile(CO2$co2percap, 0.988)
+CO2 <- subset(CO2, CO2$GDP<q)
+CO2 <- subset(CO2, CO2$co2percap<p)
+
+#Let's start by analizing the plot of covariate GDP with respect to the observation CO2
+plot(CO2$GDP,CO2$co2percap,xlab="GDP",ylab="CO2emission")
+
+```
+
+
+```{r}
+model_string <- "
+model {
+  for (i in 1:N) {
+   
+    # Define the linear predictor, only for mu
+    mu[i] <- inprod(X[i,], beta)
+    
+    #mu[i] <- beta_poor_0 * X[i,1] + beta_rich_0 * X[i,2] + beta_poor_gdp * X[i,3] + beta_rich_gdp * X[i,4]
+
+    #Normal model where the mean is modeled using the linear predictor, without further trasformations, for high interpretability
+    co2percap[i] ~ dnorm(mu[i], beta_gamma)
+
+    indicator[i] <- (unGDP[i] >= threshold)
+    X[i, 1] <- (1 - indicator[i])
+    X[i, 2] <- indicator[i]
+    X[i, 3] <- GDP[i] * (1 - indicator[i])
+    X[i, 4] <- GDP[i] * indicator[i]
+  }
+
+  #Prior for the variance
+  beta_gamma ~ dgamma(0.001, 0.001)
+  
+  #Uninformative priors for beta parameters
+  beta[1]~ dnorm(0, 0.01)
+  beta[2]~ dnorm(0, 0.01)
+  beta[3]~ dnorm(0, 0.01)
+  
+  #Informative prior
+  beta[4]~ dnorm(0, 1)
+  
+  #Prior for threshold
+  threshold ~ dunif(min_threshold, max_threshold)
+
+  #Define thresholds
+  min_threshold <- 25000
+  max_threshold <- 35000
+}
+"
+
+#Normalization of covariates
+preproc2 <- preProcess(CO2[,c(4:10)], method=c("range"))
+norm2 <- predict(preproc2, CO2[,c(4:10)])
+
+# Data preparation
+data_list <- list(
+  N = nrow(CO2),    # Number of data points
+  co2percap = CO2$co2percap,
+  GDP = norm2$GDP,
+  unGDP = CO2$GDP   #Un-normalized GDP to be compared with threshold
+)
+
+# Set the number of iterations
+n_iterations <- 50000
+
+# Compile the model
+jags_model <- jags.model(textConnection(model_string), data = data_list)
+
+update(jags_model, 5000, progress.bar="none")
+
+# Run the model
+jags_output <- coda.samples(model = jags_model, variable.names = c(
+  "beta",
+  "threshold",
+  "beta_gamma"
+
+), n.iter = n_iterations, n.chains = 1)
+
+gr=summary(jags_output)
+gr
+
+traceplot(jags_output)
+
+```
