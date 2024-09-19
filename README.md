@@ -1,14 +1,14 @@
 # CO2 analysis: 
 *Developed between June and July 2024 at Politecnico di Milano*
 
-The aim of the project is to analyze the CO2 emissions dataset using **Bayesian learning and Monte Carlo Simulations** tools. After a preliminary analysis we answer to some statistical questions, in particual we wonder if C02 and GDP are strongly dependent and we study if their relation still holds at high incomes.
+The aim of the project is to analyze the CO2 emissions dataset using **Bayesian learning and Monte Carlo Simulations** tools. After a preliminary analysis we answer to some statistical questions, in particualr we wonder if C02 and GDP are strongly dependent and we study if their relation still holds at high incomes.
 
 **Task:** Consider a regression model to explain C02 emission with the other variables. You can
 transform some of the variables. Additional questions: C02 and GDP are strongly dependent?
 Historically, CO2 emissions have been strongly correlated with how much money we have.
 This is particularly true at low-to-middle incomes. The richer we are, the more CO2 we
-emit. This is because we use more energy – which often comes from burning fossil fuels. This
-relationship is stil true at higher incomes? In addition you can: consider and compare various
+emit. This is because we use more energy – which often comes from burning fossil fuels. Is this relationship still true at higher incomes?
+In addition you can: consider and compare various
 years. Consider the time as a covariate. Add more covariates (taking them from the web).
 Consider time series models.
 
@@ -19,7 +19,7 @@ In [CO2 - presentation.pdf](https://github.com/lorenzofranze/co2-analysis/blob/m
 ##Tools
 * language: R
 * software: [JAGS](https://mcmc-jags.sourceforge.io/) (type of Gibbs Sampler)
-* methodolgy: Bayesian statistics, Bayesian learning, Monte Carlo simulations
+* methodology: Bayesian statistics, Bayesian learning, Monte Carlo simulations
 
 ## Dataset
 **Source** \
@@ -49,7 +49,7 @@ wind, geothermal, wave and tidal and bioenergy. Traditional biofuels are not inc
 ## Methodology
 Here sections are listed:
 * Task and dataset
-* Preliminary analysis: transofrmations of some variables
+* Preliminary analysis: transformations of some variables
 * BAS analysis and feature selection:
   * prediction using only energyUse (g-prior)
   * Jeffreys-Zellner-Siow (JZS) priors
