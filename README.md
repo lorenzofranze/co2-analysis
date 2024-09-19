@@ -16,6 +16,11 @@ In [CO2 data analysis.pdf](https://github.com/lorenzofranze/co2-analysis/blob/ma
 
 In [CO2 - presentation.pdf](https://github.com/lorenzofranze/co2-analysis/blob/main/CO2%20-%20presentation.pdf) results are presented in detail, in particular some charts of the results are present as comparison.
 
+##Tools
+* language: R
+* software: [JAGS](https://mcmc-jags.sourceforge.io/) (type of Gibbs Sampler)
+* methodolgy: Bayesian statistics, Bayesian learning, Monte Carlo simulations
+
 ## Dataset
 **Source** \
 https://ourworldindata.org/grapher/energy-use-per-capita-vs-gdp-per-capita \
