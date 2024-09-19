@@ -16,7 +16,7 @@ In [CO2 data analysis.pdf](https://github.com/lorenzofranze/co2-analysis/blob/ma
 
 In [CO2 - presentation.pdf](https://github.com/lorenzofranze/co2-analysis/blob/main/CO2%20-%20presentation.pdf) results are presented in detail, in particular some charts of the results are present as comparison.
 
-##Tools
+## Tools
 * language: R
 * software: [JAGS](https://mcmc-jags.sourceforge.io/) (type of Gibbs Sampler)
 * methodology: Bayesian statistics, Bayesian learning, Monte Carlo simulations
