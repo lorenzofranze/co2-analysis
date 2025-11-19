@@ -3,6 +3,8 @@
 
 The aim of the project is to analyze the CO2 emissions dataset using **Bayesian learning and Monte Carlo Simulations** tools. After a preliminary analysis we answer to some statistical questions, in particualr we wonder if C02 and GDP are strongly dependent and we study if their relation still holds at high incomes.
 
+<img src="https://github.com/lorenzofranze/co2-analysis/blob/main/image/co2.PNG" width="400">
+
 **Task:** Consider a regression model to explain C02 emission with the other variables. You can
 transform some of the variables. Additional questions: C02 and GDP are strongly dependent?
 Historically, CO2 emissions have been strongly correlated with how much money we have.
