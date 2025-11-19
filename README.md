@@ -1,5 +1,5 @@
 # CO2 analysis: 
-*Developed between June and July 2024 at Politecnico di Milano*
+*Developed between March and April 2024 at Politecnico di Milano*
 
 The aim of the project is to analyze the CO2 emissions dataset using **Bayesian learning and Monte Carlo Simulations** tools. After a preliminary analysis we answer to some statistical questions, in particualr we wonder if C02 and GDP are strongly dependent and we study if their relation still holds at high incomes.
 
